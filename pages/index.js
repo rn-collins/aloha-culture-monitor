@@ -37,7 +37,7 @@ export default function Home(){
   const [loading,setLoading]=useState(true)
   const [refreshing,setRefreshing]=useState(false)
   const [contactOpen,setContactOpen]=useState(false)
-  const load=async(force=false)=>{force?setRefreshing(true):setLoading(true);try{const r=await fetch(`/api/signals${force?'?refresh=1':''}`);const d=await r.json();setData(d)}catch{};setLoading(false);setRefreshing(false)}
+  const load=async(force=false)=>{force?setRefreshing(true):setLoading(true);try{const r=await fetch(`/api/signals${force?'?refresh=1':''}`);const raw=await r.json();const d=Array.isArray(raw)?JSON.parse(raw[0]):raw;setData(d)}catch{};setLoading(false);setRefreshing(false)}
   useEffect(()=>{load()},[])
   const fmtTime=ts=>ts?new Date(ts).toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}):''
   const riskC=lvl=>RISK[lvl]||RISK.None
