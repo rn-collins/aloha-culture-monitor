@@ -1,19 +1,20 @@
-// /pages/api/signals.js
-// Data: Google Trends (SerpAPI-free proxy) + Reddit JSON public API + Wikipedia pageview API
-// Cache: Upstash Redis REST — 6 hour TTL
-// No paid APIs, no API keys beyond Upstash
+// Replacement signals.js — drops Reddit, adds Google News RSS + Google Trends
+// Google Trends via unofficial endpoint (works from Vercel)
+// Google News RSS via news.google.com/rss (works from Vercel, no key)
 
-const CACHE_KEY = 'cim:signals:v3'
-const CACHE_TTL = 60 * 60 * 6 // 6 hours
+const CACHE_KEY = 'cim:signals:v4'
+const CACHE_TTL = 60 * 60 * 6
 
-// Upstash Redis via REST (uses existing suppression-sweep credentials)
 async function redisGet(key) {
   try {
     const r = await fetch(`${process.env.UPSTASH_REDIS_REST_URL}/get/${key}`, {
       headers: { Authorization: `Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}` }
     })
     const d = await r.json()
-    return d.result ? JSON.parse(d.result) : null
+    if (!d.result) return null
+    const val = typeof d.result === 'string' ? JSON.parse(d.result) : d.result
+    if (Array.isArray(val)) return typeof val[0] === 'string' ? JSON.parse(val[0]) : val[0]
+    return val
   } catch { return null }
 }
 
@@ -21,214 +22,142 @@ async function redisSet(key, value, ttl) {
   try {
     await fetch(`${process.env.UPSTASH_REDIS_REST_URL}/set/${key}`, {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}`,
-        'Content-Type': 'application/json'
-      },
+      headers: { Authorization: `Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}`, 'Content-Type': 'application/json' },
       body: JSON.stringify([JSON.stringify(value), 'EX', ttl])
     })
   } catch {}
 }
 
-// SIGNALS CONFIG — culture moments we monitor
-// Each has: Google Trends keywords, Reddit subreddits+search, Wikipedia article, governance risk logic
 const SIGNALS_CONFIG = [
-  {
-    id: 'bridgerton',
-    title: 'Bridgerton universe',
-    source: 'Netflix',
-    category: 'Film & TV',
-    trendsKeyword: 'bridgerton fashion',
-    wikiArticle: 'Bridgerton',
-    redditQuery: 'bridgerton',
-    redditSubs: ['femalefashionadvice', 'television'],
-    governanceKeywords: [],
-    riskLevel: 'Low',
-    riskNote: 'Standard licensed partnerships. No AI content exposure identified.'
-  },
-  {
-    id: 'mj_biopic',
-    title: 'Michael Jackson biopic',
-    source: 'Universal / TikTok',
-    category: 'Music & Artists',
-    trendsKeyword: 'michael jackson style 2026',
-    wikiArticle: 'Michael_Jackson',
-    redditQuery: 'michael jackson biopic',
-    redditSubs: ['malefashionadvice', 'movies'],
-    governanceKeywords: ['ai voice', 'deepfake', 'likeness'],
-    riskLevel: 'High',
-    riskNote: 'AI vocal recreation tools create digital likeness exposure for MJ-adjacent commercial activations.'
-  },
-  {
-    id: 'euphoria',
-    title: 'Euphoria S3 — Feral Glam',
-    source: 'HBO / TikTok',
-    category: 'Fashion & Style',
-    trendsKeyword: 'feral glam aesthetic',
-    wikiArticle: 'Euphoria_(American_TV_series)',
-    redditQuery: 'euphoria fashion maddy',
-    redditSubs: ['femalefashionadvice', 'television'],
-    governanceKeywords: ['ai generated', 'synthetic'],
-    riskLevel: 'Medium',
-    riskNote: 'AI-generated Euphoria aesthetic content proliferating on TikTok — verify creator content authenticity before amplification.'
-  },
-  {
-    id: 'yellowstone',
-    title: 'Dutton Ranch — Texas effect',
-    source: 'Paramount+',
-    category: 'Film & TV',
-    trendsKeyword: 'dutton ranch texas',
-    wikiArticle: 'Yellowstone_(TV_series)',
-    redditQuery: 'yellowstone dutton ranch',
-    redditSubs: ['television', 'malefashionadvice'],
-    governanceKeywords: [],
-    riskLevel: 'None',
-    riskNote: 'No AI governance exposure identified.'
-  },
-  {
-    id: 'ai_influencers',
-    title: 'AI-generated creator activations',
-    source: 'FTC / Industry',
-    category: 'AI & Synthetic Media',
-    trendsKeyword: 'ai influencer brand',
-    wikiArticle: 'Virtual_influencer',
-    redditQuery: 'ai influencer marketing',
-    redditSubs: ['marketing', 'socialmedia'],
-    governanceKeywords: ['ftc', 'disclosure', 'synthetic', 'virtual influencer'],
-    riskLevel: 'High',
-    riskNote: 'FTC disclosure requirements for AI-generated personas not yet codified — enforcement risk rising. No activations without explicit governance protocol.'
-  },
-  {
-    id: 'puma_bembury',
-    title: 'PUMA × Bembury World Cup drop',
-    source: 'PUMA / Hypebeast',
-    category: 'Sports Culture',
-    trendsKeyword: 'puma bembury world cup',
-    wikiArticle: 'PUMA',
-    redditQuery: 'puma bembury world cup kit',
-    redditSubs: ['streetwear', 'soccer'],
-    governanceKeywords: [],
-    riskLevel: 'Low',
-    riskNote: 'Standard licensed collaboration. Monitor for AI-generated marketing content if activations expand.'
-  }
+  { id:'bridgerton', title:'Bridgerton universe', source:'Netflix', category:'Film & TV', trendsKeyword:'bridgerton fashion', wikiArticle:'Bridgerton', newsQuery:'Bridgerton brand fashion', riskLevel:'Low', riskNote:'Standard licensed partnerships. No AI content exposure identified.' },
+  { id:'mj_biopic', title:'Michael Jackson biopic', source:'Universal / TikTok', category:'Music & Artists', trendsKeyword:'michael jackson style 2026', wikiArticle:'Michael_Jackson', newsQuery:'Michael Jackson biopic fashion style', riskLevel:'High', riskNote:'AI vocal recreation tools create digital likeness exposure for MJ-adjacent commercial activations.' },
+  { id:'euphoria', title:'Euphoria S3 — Feral Glam', source:'HBO / TikTok', category:'Fashion & Style', trendsKeyword:'feral glam aesthetic', wikiArticle:'Euphoria_(American_TV_series)', newsQuery:'Euphoria season 3 fashion feral glam', riskLevel:'Medium', riskNote:'AI-generated Euphoria aesthetic content proliferating on TikTok — verify creator content authenticity before amplification.' },
+  { id:'yellowstone', title:'Dutton Ranch — Texas effect', source:'Paramount+', category:'Film & TV', trendsKeyword:'dutton ranch texas', wikiArticle:'Yellowstone_(TV_series)', newsQuery:'Dutton Ranch Yellowstone fashion tourism', riskLevel:'None', riskNote:'No AI governance exposure identified.' },
+  { id:'ai_influencers', title:'AI-generated creator activations', source:'FTC / Industry', category:'AI & Synthetic Media', trendsKeyword:'ai influencer marketing brand', wikiArticle:'Virtual_influencer', newsQuery:'AI influencer synthetic creator FTC disclosure', riskLevel:'High', riskNote:'FTC disclosure requirements for AI-generated personas not yet codified — enforcement risk rising.' },
+  { id:'puma_bembury', title:'PUMA × Bembury World Cup drop', source:'PUMA / Hypebeast', category:'Sports Culture', trendsKeyword:'puma world cup 2026 fashion', wikiArticle:'PUMA', newsQuery:'PUMA Bembury World Cup kit fashion drop', riskLevel:'Low', riskNote:'Standard licensed collaboration. No AI governance exposure identified.' }
 ]
 
-// Fetch Wikipedia pageviews for a single article (last 7 days)
 async function fetchWikiViews(article) {
   try {
     const end = new Date()
     const start = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
     const fmt = d => d.toISOString().slice(0,10).replace(/-/g,'')
-    const url = `https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article/en.wikipedia/all-access/all-agents/${encodeURIComponent(article)}/daily/${fmt(start)}/${fmt(end)}`
-    const r = await fetch(url, { headers: { 'User-Agent': 'CultureIntelligenceMonitor/1.0' } })
+    const r = await fetch(
+      `https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article/en.wikipedia/all-access/all-agents/${encodeURIComponent(article)}/daily/${fmt(start)}/${fmt(end)}`,
+      { headers: { 'User-Agent': 'CultureIntelligenceMonitor/1.0 (aloha-ai-consulting)' } }
+    )
     if (!r.ok) return null
     const d = await r.json()
     const items = d.items || []
     const total = items.reduce((s, i) => s + (i.views || 0), 0)
     const daily = Math.round(total / (items.length || 1))
-    return { total, daily, days: items.length }
+    const recent = items.slice(-3).reduce((s,i) => s+(i.views||0),0) / 3
+    const earlier = items.slice(0,3).reduce((s,i) => s+(i.views||0),0) / 3
+    const momentum = earlier > 0 ? Math.round(((recent - earlier) / earlier) * 100) : 0
+    return { daily, total, momentum, days: items.length }
   } catch { return null }
 }
 
-// Fetch Reddit post count for a query in given subreddits
-async function fetchRedditSignal(query, subs) {
+async function fetchGoogleNews(query) {
   try {
-    const sub = subs[0] // use first subreddit to avoid rate limits
-    const url = `https://www.reddit.com/r/${sub}/search.json?q=${encodeURIComponent(query)}&sort=hot&limit=10&t=week`
-    const r = await fetch(url, { headers: { 'User-Agent': 'CultureIntelligenceMonitor/1.0' } })
+    const url = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=en-US&gl=US&ceid=US:en`
+    const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; AlohaAIConsulting/1.0)' } })
     if (!r.ok) return null
-    const d = await r.json()
-    const posts = d.data?.children || []
-    const totalScore = posts.reduce((s, p) => s + (p.data?.score || 0), 0)
-    return { postCount: posts.length, totalScore, topPost: posts[0]?.data?.title || null }
+    const xml = await r.text()
+    const items = []
+    const matches = xml.matchAll(/<item>([\s\S]*?)<\/item>/g)
+    for (const m of matches) {
+      const b = m[1]
+      const title = b.match(/<title>(.*?)<\/title>/)?.[1]?.replace(/<[^>]+>/g,'').trim()
+      const source = b.match(/<source[^>]*>(.*?)<\/source>/)?.[1]?.trim()
+      const date = b.match(/<pubDate>(.*?)<\/pubDate>/)?.[1]?.trim()
+      if (title) items.push({ title, source, date })
+    }
+    const count = items.length
+    const topSource = items[0]?.source || null
+    const topTitle = items[0]?.title?.slice(0,80) || null
+    return { count, topSource, topTitle }
   } catch { return null }
 }
 
-// Fetch Google Trends via unofficial endpoint (no key needed)
-async function fetchTrends(keyword) {
+async function fetchGoogleTrends(keyword) {
   try {
-    // Use the trends explore API directly
-    const encodedKw = encodeURIComponent(JSON.stringify([{ keyword, geo: '', time: 'now 7-d' }]))
-    const url = `https://trends.google.com/trends/api/explore?hl=en-US&tz=-300&req=${encodedKw}&cts=1`
+    // Use Google Trends widget API — unofficial but works from Vercel
+    const comparisonItem = [{ keyword, geo: '', time: 'now 7-d' }]
+    const encoded = encodeURIComponent(JSON.stringify(comparisonItem))
+    const url = `https://trends.google.com/trends/api/explore?hl=en-US&tz=-300&req=${encoded}&cts=1`
     const r = await fetch(url, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-        'Accept-Language': 'en-US,en;q=0.9'
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Referer': 'https://trends.google.com/trends/explore'
       }
     })
     if (!r.ok) return null
-    // Google Trends prepends ")]}',\n" to the response
     const text = (await r.text()).replace(/^\)\]\}',\n/, '')
     const data = JSON.parse(text)
-    // Extract trend score from widgets
     const widgets = data.widgets || []
     const timeWidget = widgets.find(w => w.id === 'TIMESERIES')
-    if (!timeWidget) return null
-    return { token: timeWidget.token, keyword }
+    if (!timeWidget?.token) return null
+
+    // Fetch the actual time series data
+    const dataUrl = `https://trends.google.com/trends/api/widgetdata/multiline?hl=en-US&tz=-300&req=${encodeURIComponent(JSON.stringify({ time: 'now 7-d', resolution: 'HOUR', locale: 'en-US', comparisonItem: [{ geo: {}, complexKeywordsRestriction: { keyword: [{ type: 'BROAD', value: keyword }] } }], requestOptions: { property: '', backend: 'IZG', category: 0 } }))}&token=${encodeURIComponent(timeWidget.token)}&user_type=`
+    const dr = await fetch(dataUrl, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36' }
+    })
+    if (!dr.ok) return null
+    const dtext = (await dr.text()).replace(/^\)\]\}',\n/, '')
+    const ddata = JSON.parse(dtext)
+    const values = (ddata.default?.timelineData || []).map(t => t.value?.[0] || 0).filter(v => v > 0)
+    if (!values.length) return null
+    const avg = Math.round(values.reduce((a,b) => a+b, 0) / values.length)
+    const recent3 = values.slice(-3)
+    const earlier3 = values.slice(0,3)
+    const rAvg = recent3.reduce((a,b) => a+b,0) / recent3.length
+    const eAvg = earlier3.reduce((a,b) => a+b,0) / earlier3.length
+    const direction = rAvg > eAvg * 1.1 ? 'rising' : rAvg < eAvg * 0.9 ? 'falling' : 'stable'
+    return { score: avg, direction, peak: Math.max(...values) }
   } catch { return null }
 }
 
 async function buildSignals() {
   const results = await Promise.allSettled(
     SIGNALS_CONFIG.map(async (cfg) => {
-      const [wiki, reddit] = await Promise.allSettled([
+      const [wiki, news, trends] = await Promise.allSettled([
         fetchWikiViews(cfg.wikiArticle),
-        fetchRedditSignal(cfg.redditQuery, cfg.redditSubs)
+        fetchGoogleNews(cfg.newsQuery),
+        fetchGoogleTrends(cfg.trendsKeyword)
       ])
-
-      const wikiData = wiki.status === 'fulfilled' ? wiki.value : null
-      const redditData = reddit.status === 'fulfilled' ? reddit.value : null
-
-      // Build commercial signal text from live data
-      let commercialSignal = ''
-      if (wikiData?.daily) {
-        commercialSignal += `${wikiData.daily.toLocaleString()} avg daily Wikipedia views this week. `
-      }
-      if (redditData?.postCount) {
-        commercialSignal += `${redditData.postCount} active posts on r/${cfg.redditSubs[0]} (${redditData.totalScore.toLocaleString()} total upvotes). `
-      }
-      if (!commercialSignal) {
-        commercialSignal = 'Live signal data temporarily unavailable — check back shortly.'
-      }
-
       return {
         id: cfg.id,
         title: cfg.title,
         source: cfg.source,
         category: cfg.category,
-        commercialSignal: commercialSignal.trim(),
-        wikiViews: wikiData,
-        redditSignal: redditData,
+        wikiViews: wiki.status === 'fulfilled' ? wiki.value : null,
+        newsSignal: news.status === 'fulfilled' ? news.value : null,
+        trendsSignal: trends.status === 'fulfilled' ? trends.value : null,
         riskLevel: cfg.riskLevel,
         riskNote: cfg.riskNote,
         fetchedAt: new Date().toISOString()
       }
     })
   )
-
-  return results
-    .filter(r => r.status === 'fulfilled')
-    .map(r => r.value)
+  return results.filter(r => r.status === 'fulfilled').map(r => r.value)
 }
 
 export default async function handler(req, res) {
   const forceRefresh = req.query.refresh === '1'
-
   if (!forceRefresh) {
     const cached = await redisGet(CACHE_KEY)
-    if (cached) return res.status(200).json(cached)
+    if (cached && cached.signals) return res.status(200).json(cached)
   }
-
   try {
     const signals = await buildSignals()
-    const payload = {
-      signals,
-      meta: { updatedAt: new Date().toISOString(), count: signals.length, source: 'live' }
-    }
+    const payload = { signals, meta: { updatedAt: new Date().toISOString(), count: signals.length, source: 'live' } }
     await redisSet(CACHE_KEY, payload, CACHE_TTL)
     return res.status(200).json(payload)
   } catch (err) {
     console.error('signals error:', err)
-    return res.status(500).json({ error: 'Failed to fetch signals', signals: [], meta: { source: 'error' } })
+    return res.status(500).json({ error: 'Failed', signals: [], meta: { source: 'error' } })
   }
 }
