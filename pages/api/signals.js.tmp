@@ -1,0 +1,30 @@
+const CACHE_KEY = 'cim:signals:v3'
+const CACHE_TTL = 60 * 60 * 6
+
+async function redisGet(key) {
+  try {
+    const r = await fetch(`${process.env.UPSTASH_REDIS_REST_URL}/get/${key}`, {
+      headers: { Authorization: `Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}` }
+    })
+    const d = await r.json()
+    if (!d.result) return null
+    // Handle both string and already-parsed object
+    const val = typeof d.result === 'string' ? JSON.parse(d.result) : d.result
+    // Handle Upstash wrapping in array
+    if (Array.isArray(val)) return typeof val[0] === 'string' ? JSON.parse(val[0]) : val[0]
+    return val
+  } catch { return null }
+}
+
+async function redisSet(key, value, ttl) {
+  try {
+    await fetch(`${process.env.UPSTASH_REDIS_REST_URL}/set/${key}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify([JSON.stringify(value), 'EX', ttl])
+    })
+  } catch {}
+}
