@@ -16,7 +16,7 @@ function ContactModal({isOpen,onClose}){
     <div onClick={onClose} style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:200,backdropFilter:'blur(2px)'}}/>
     <div style={{position:'fixed',bottom:0,left:0,right:0,background:'white',borderRadius:'16px 16px 0 0',padding:'36px 40px 48px',zIndex:201,maxWidth:560,margin:'0 auto',boxShadow:'0 -8px 40px rgba(0,0,0,0.15)'}}>
       <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:24}}>
-        <div><div style={{fontFamily:'Syne',fontSize:20,fontWeight:700,color:TX}}>Contact the Architect</div><div style={{fontSize:13,color:MU,marginTop:4}}>RN Collins · Aloha AI Consulting</div><div style={{fontFamily:'monospace',fontSize:11,color:MU,marginTop:3}}>collins.ra@northeastern.edu</div></div>
+        <div><div style={{fontFamily:'Syne',fontSize:20,fontWeight:700,color:TX}}>Contact the Architect</div><div style={{fontSize:13,color:MU,marginTop:4}}>RN Collins · Aloha AI Consulting</div></div>
         <button onClick={onClose} style={{background:'none',border:'none',fontSize:20,cursor:'pointer',color:MU}}>✕</button>
       </div>
       {status==='success'?(<div style={{textAlign:'center',padding:'32px 0'}}><div style={{fontSize:32,marginBottom:12}}>✓</div><div style={{fontFamily:'Syne',fontSize:16,fontWeight:600,color:TX,marginBottom:8}}>Message received</div><div style={{fontSize:14,color:MU,lineHeight:1.6}}>I'll be in touch within 48 hours. Check your inbox for a confirmation.</div><button onClick={onClose} style={{marginTop:24,padding:'10px 24px',background:G,border:'none',borderRadius:6,fontFamily:'Syne',fontSize:13,fontWeight:600,color:'white',cursor:'pointer'}}>Close</button></div>):(
