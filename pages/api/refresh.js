@@ -7,7 +7,8 @@ export default async function handler(req, res) {
   const proto = host?.includes('localhost') ? 'http' : 'https'
   try {
     const response = await fetch(`${proto}://${host}/api/signals?refresh=1`, {
-      signal: AbortSignal.timeout(25000)
+      signal: AbortSignal.timeout(25000),
+      headers: { Authorization: req.headers.authorization }
     })
     const data = await response.json()
     return res.status(response.ok ? 200 : response.status).json({
