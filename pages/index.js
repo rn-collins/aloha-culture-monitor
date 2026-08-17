@@ -70,14 +70,14 @@ function ContactModal({isOpen,onClose}){
   </>)
 }
 
-export default function Home(){
-  const [data,setData]=useState(null)
-  const [error,setError]=useState(null)
-  const [loading,setLoading]=useState(true)
+export default function Home({initialData=null,initialError=null}){
+  const [data,setData]=useState(initialData)
+  const [error,setError]=useState(initialError)
+  const [loading,setLoading]=useState(!initialData && !initialError)
   const [refreshing,setRefreshing]=useState(false)
   const [contactOpen,setContactOpen]=useState(false)
-  const load=async(force=false)=>{force?setRefreshing(true):setLoading(true);setError(null);try{const r=await fetch(`/api/signals${force?'?refresh=1':''}`);if(!r.ok)throw new Error();const d=await r.json();setData(d)}catch(e){setError('Unable to load signals. Please try again.')};setLoading(false);setRefreshing(false)}
-  useEffect(()=>{load()},[])
+  const load=async(force=false)=>{force?setRefreshing(true):setLoading(true);setError(null);const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),12000);try{const r=await fetch(`/api/signals${force?'?refresh=1':''}`,{signal:controller.signal});const d=await r.json();if(!r.ok)throw new Error(d.error||'Signal request failed');setData(d)}catch(e){setError(e?.name==='AbortError'?'The signal service did not respond within 12 seconds. The monitor is not presenting this attempt as current.':'Unable to load verified signals. The monitor is not presenting this attempt as current.')}finally{clearTimeout(timer);setLoading(false);setRefreshing(false)}}
+  useEffect(()=>{if(!initialData&&!initialError)load()},[])
   const fmtTime=ts=>ts?new Date(ts).toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}):''
   const riskC=lvl=>RISK[lvl]||RISK.None
   return(<>
@@ -112,8 +112,16 @@ export default function Home(){
       <main id="main-content" role="main" style={{flex:1,maxWidth:1280,margin:'0 auto',padding:'48px 24px',width:'100%'}}>
         <div style={{marginBottom:40}}>
           <h1 style={{fontFamily:'Syne',fontSize:28,fontWeight:700,color:TX,marginBottom:10,letterSpacing:'-.02em'}}>Screen Culture → Consumer Behavior</h1>
-          <p style={{fontSize:15,color:MU,lineHeight:1.65,maxWidth:680}}>Live signal monitoring across film, television, and cultural moments driving real-world style, taste, and purchasing behavior — with AI governance risk assessment on every signal. Data from Wikipedia, Reddit, and Google Trends. Updated daily.</p>
+          <p style={{fontSize:15,color:MU,lineHeight:1.65,maxWidth:680}}>Culture-signal monitoring across film, television, and cultural moments that may shape style, taste, and purchasing behavior — with a governance-risk screen on each tracked item. Measurements use Wikimedia Pageviews, Google News RSS, and an experimental Google Trends connection. The scheduled check runs daily; the dated status below controls whether the data is current.</p>
         </div>
+        {data?.meta&&(<section aria-label="Signal status and sources" style={{background:data.meta.stale?'#FFF7E6':'white',border:`1px solid ${data.meta.stale?'#D9A441':BD}`,borderRadius:10,padding:'18px 20px',marginBottom:24}}>
+          <div style={{display:'flex',justifyContent:'space-between',gap:16,alignItems:'flex-start',flexWrap:'wrap'}}>
+            <div><div style={{fontFamily:'Syne',fontSize:13,fontWeight:700,color:data.meta.stale?'#854F0B':GD}}>{data.meta.stale?'Historical signal set — refresh not verified':'Current verified signal set'}</div><div style={{fontSize:12,color:MU,marginTop:5}}>Last successful data: {data.meta.updatedAt?fmtTime(data.meta.updatedAt):'not recorded'} · Age {data.meta.ageHours??'unknown'} hours · Schedule {data.meta.cadence||'Daily at 00:00 UTC'}</div></div>
+            <div style={{fontFamily:'DM Mono',fontSize:11,color:MU,textTransform:'uppercase'}}>{data.meta.status||'unknown'} · {data.meta.source||'unrecorded source state'}</div>
+          </div>
+          {data.meta.failureReason&&<p role="alert" style={{fontSize:12,lineHeight:1.55,color:'#854F0B',margin:'12px 0 0'}}>Latest refresh issue: {data.meta.failureReason}</p>}
+          <details style={{marginTop:12}}><summary style={{fontFamily:'Syne',fontSize:12,fontWeight:600,color:TX,cursor:'pointer'}}>Sources and measurement limits</summary><div style={{display:'grid',gap:8,marginTop:10}}>{(data.meta.sourceDocumentation||[]).map(source=><div key={source.name} style={{fontSize:12,color:MU}}><strong style={{color:TX}}>{source.name}</strong> — {source.role}. {source.status}</div>)}</div><p style={{fontSize:12,lineHeight:1.55,color:MU,margin:'10px 0 0'}}>These are attention and coverage indicators, not causal proof of consumer behavior. Governance-risk notes are screening judgments and should be reviewed before operational use.</p></details>
+        </section>)}
         {loading&&(<div style={{display:'flex',alignItems:'center',gap:12,padding:'60px 0',color:MU,fontSize:14}}><div style={{width:12,height:12,borderRadius:'50%',background:G,animation:'pulse 1.2s ease-in-out infinite'}}/>Fetching live signals...<style>{`@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.85)}}`}</style></div>)}
         {!loading&&error&&(<div style={{padding:"40px 0",textAlign:"center"}} role="alert"><p style={{fontSize:15,color:"#A32D2D",marginBottom:16}}>{error}</p><button onClick={()=>load()} style={{fontFamily:"Syne",fontSize:13,fontWeight:600,padding:"8px 20px",background:G,border:"none",borderRadius:6,color:"white",cursor:"pointer"}}>Try again</button></div>)}
         {!loading&&data?.signals&&(<>
@@ -138,4 +146,23 @@ export default function Home(){
       </footer>
     </div>
   </>)
+}
+
+
+export async function getServerSideProps({req}) {
+  const host = req.headers.host
+  const protocol = host?.includes('localhost') ? 'http' : 'https'
+  try {
+    const response = await fetch(`${protocol}://${host}/api/signals`, { signal: AbortSignal.timeout(10000) })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || 'Signal request failed')
+    return { props: { initialData: data, initialError: null } }
+  } catch {
+    return {
+      props: {
+        initialData: null,
+        initialError: 'Verified signals were unavailable during this dated server request. No indefinite loading state is being shown; use Try again to make a new bounded request.'
+      }
+    }
+  }
 }
