@@ -176,6 +176,9 @@ async function buildSignals() {
 
 export default async function handler(req, res) {
   const forceRefresh = req.query.refresh === '1'
+  if (forceRefresh && req.headers.authorization !== `Bearer ${process.env.CRON_SECRET}`) {
+    return res.status(401).json({ error: 'Unauthorized refresh request' })
+  }
   const cached = await redisGet(CACHE_KEY)
 
   if (!forceRefresh && cached?.signals?.length) {
