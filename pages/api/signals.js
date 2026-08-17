@@ -3,7 +3,36 @@
 // Google News RSS via news.google.com/rss (works from Vercel, no key)
 
 const CACHE_KEY = 'cim:signals:v4'
-const CACHE_TTL = 60 * 60 * 6
+const CACHE_TTL = 60 * 60 * 48
+const CADENCE_HOURS = 24
+const STALE_AFTER_HOURS = 30
+
+function ageHours(timestamp) {
+  const ms = timestamp ? Date.now() - new Date(timestamp).getTime() : NaN
+  return Number.isFinite(ms) ? Math.max(0, Math.round((ms / 36e5) * 10) / 10) : null
+}
+
+function withHealth(payload, overrides = {}) {
+  const updatedAt = payload?.meta?.updatedAt || payload?.signals?.[0]?.fetchedAt || null
+  const age = ageHours(updatedAt)
+  return {
+    ...payload,
+    meta: {
+      ...(payload?.meta || {}),
+      updatedAt,
+      ageHours: age,
+      cadence: 'Daily at 00:00 UTC',
+      staleAfterHours: STALE_AFTER_HOURS,
+      stale: age == null || age > STALE_AFTER_HOURS,
+      sourceDocumentation: [
+        { name: 'Wikimedia Pageviews API', role: 'Seven-day attention volume', status: 'queried' },
+        { name: 'Google News RSS', role: 'News-result volume and leading source', status: 'queried' },
+        { name: 'Google Trends', role: 'Directional search-interest signal', status: 'experimental; may be unavailable' }
+      ],
+      ...overrides
+    }
+  }
+}
 
 async function redisGet(key) {
   try {
@@ -147,17 +176,76 @@ async function buildSignals() {
 
 export default async function handler(req, res) {
   const forceRefresh = req.query.refresh === '1'
-  if (!forceRefresh) {
-    const cached = await redisGet(CACHE_KEY)
-    if (cached && cached.signals) return res.status(200).json(cached)
+  const cached = await redisGet(CACHE_KEY)
+
+  if (!forceRefresh && cached?.signals?.length) {
+    const payload = withHealth(cached, {
+      status: ageHours(cached.meta?.updatedAt) > STALE_AFTER_HOURS ? 'stale' : 'healthy',
+      source: 'verified-cache'
+    })
+    res.setHeader('Cache-Control', 'public, s-maxage=300, stale-while-revalidate=3600')
+    return res.status(200).json(payload)
   }
+
+  const attemptAt = new Date().toISOString()
   try {
     const signals = await buildSignals()
-    const payload = { signals, meta: { updatedAt: new Date().toISOString(), count: signals.length, source: 'live' } }
+    const measurementCount = signals.reduce((n, signal) =>
+      n + [signal.wikiViews, signal.newsSignal, signal.trendsSignal].filter(Boolean).length, 0)
+    const minimumMeasurements = SIGNALS_CONFIG.length
+
+    if (signals.length !== SIGNALS_CONFIG.length || measurementCount < minimumMeasurements) {
+      const reason = `Discovery returned ${signals.length}/${SIGNALS_CONFIG.length} signals and ${measurementCount} usable measurements; prior verified data preserved.`
+      if (cached?.signals?.length) {
+        return res.status(200).json(withHealth(cached, {
+          status: 'failed',
+          stale: true,
+          source: 'preserved-cache',
+          lastAttemptAt: attemptAt,
+          failureReason: reason
+        }))
+      }
+      return res.status(503).json({
+        error: 'No verified signal set is currently available.',
+        signals: [],
+        meta: {
+          status: 'failed',
+          stale: true,
+          lastAttemptAt: attemptAt,
+          cadence: 'Daily at 00:00 UTC',
+          failureReason: reason
+        }
+      })
+    }
+
+    const payload = withHealth({
+      signals,
+      meta: {
+        updatedAt: attemptAt,
+        lastAttemptAt: attemptAt,
+        lastSuccessAt: attemptAt,
+        count: signals.length,
+        measurementCount
+      }
+    }, { status: 'healthy', stale: false, source: 'live-refresh' })
     await redisSet(CACHE_KEY, payload, CACHE_TTL)
     return res.status(200).json(payload)
   } catch (err) {
     console.error('signals error:', err)
-    return res.status(500).json({ error: 'Failed', signals: [], meta: { source: 'error' } })
+    const reason = err instanceof Error ? err.message : 'Unknown discovery failure'
+    if (cached?.signals?.length) {
+      return res.status(200).json(withHealth(cached, {
+        status: 'failed',
+        stale: true,
+        source: 'preserved-cache',
+        lastAttemptAt: attemptAt,
+        failureReason: reason
+      }))
+    }
+    return res.status(503).json({
+      error: 'Signal discovery failed and no prior verified set is available.',
+      signals: [],
+      meta: { status: 'failed', stale: true, lastAttemptAt: attemptAt, cadence: 'Daily at 00:00 UTC', failureReason: reason }
+    })
   }
 }
