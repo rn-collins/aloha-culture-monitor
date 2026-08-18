@@ -1,71 +1,55 @@
-// /pages/api/contact.js
-// Fires on every contact form submission across all four tools
-// 1. Stores to Upstash Redis under contacts:{timestamp}
-// 2. Pings #inquiries Slack channel
-// 3. Sends Resend confirmation email to submitter
-// 4. Sends Resend notification email to RN
+const MAX_FIELD = { name: 120, email: 254, inquiry: 80, message: 4000 }
+const EMAIL = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/
+const clean = (value, limit) => String(value || '').trim().slice(0, limit)
+const escapeHtml = value => value.replace(/[&<>"']/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[char]))
+
+async function upstash(command) {
+  if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN) return null
+  const response = await fetch(process.env.UPSTASH_REDIS_REST_URL, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(command)
+  })
+  if (!response.ok) throw new Error('Storage request failed')
+  return response.json()
+}
 
 export default async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(405).end()
+  if (req.method !== 'POST') { res.setHeader('Allow', 'POST'); return res.status(405).json({ error: 'Method not allowed' }) }
+  const name = clean(req.body?.name, MAX_FIELD.name)
+  const email = clean(req.body?.email, MAX_FIELD.email).toLowerCase()
+  const inquiry = clean(req.body?.inquiry, MAX_FIELD.inquiry)
+  const message = clean(req.body?.message, MAX_FIELD.message)
+  if (!name || !EMAIL.test(email) || !inquiry || message.length < 10) return res.status(400).json({ error: 'Enter a valid name, email, inquiry type, and message.' })
 
-  const { name, email, inquiry, message } = req.body
-  if (!name || !email || !inquiry || !message) {
-    return res.status(400).json({ error: 'All fields required' })
-  }
+  const ip = clean(req.headers['x-forwarded-for']?.split(',')[0] || req.socket?.remoteAddress || 'unknown', 80)
+  const bucket = `culture-contact-rate:${ip}:${Math.floor(Date.now() / 600000)}`
+  try {
+    const rate = await upstash([['INCR', bucket], ['EXPIRE', bucket, 600]])
+    const count = Number(rate?.[0]?.result || 0)
+    if (count > 5) return res.status(429).json({ error: 'Too many messages. Please try again later.' })
+  } catch (error) { console.error('contact rate-limit unavailable', error) }
 
   const timestamp = Date.now()
-  const source = req.headers.host || 'unknown'
+  const source = clean(req.headers.host || 'aloha-culture-monitor', 160)
+  const record = { name, email, inquiry, message, source, timestamp }
+  const delivery = { stored: false, slack: false, notified: false, confirmed: false }
 
-  // 1 — Store in Upstash Redis
-  try {
-    await fetch(`${process.env.UPSTASH_REDIS_REST_URL}/set/contacts:${timestamp}`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify([JSON.stringify({ name, email, inquiry, message, source, timestamp }), 'EX', 60 * 60 * 24 * 90])
-    })
-  } catch (e) { console.error('Redis store failed:', e) }
+  try { await upstash([['SET', `contacts:${timestamp}`, JSON.stringify(record), 'EX', 7776000]]); delivery.stored = true } catch (error) { console.error('contact storage failed', error) }
+  if (process.env.SLACK_INQUIRIES_WEBHOOK) try {
+    const response = await fetch(process.env.SLACK_INQUIRIES_WEBHOOK, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ text:`New inquiry via ${source}\\nName: ${name}\\nEmail: ${email}\\nType: ${inquiry}\\nMessage: ${message}` }) })
+    delivery.slack = response.ok
+  } catch (error) { console.error('contact Slack delivery failed', error) }
 
-  // 2 — Slack #inquiries alert
-  try {
-    await fetch(process.env.SLACK_INQUIRIES_WEBHOOK, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        text: `📬 *New inquiry via ${source}*\n*Name:* ${name}\n*Email:* ${email}\n*Type:* ${inquiry}\n*Message:* ${message}`
-      })
-    })
-  } catch (e) { console.error('Slack ping failed:', e) }
+  const safe = Object.fromEntries(Object.entries({name,email,inquiry,message,source}).map(([key,value])=>[key,escapeHtml(value)]))
+  const send = async body => {
+    if (!process.env.RESEND_API_KEY) return false
+    const response = await fetch('https://api.resend.com/emails', { method:'POST', headers:{ Authorization:`Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type':'application/json' }, body:JSON.stringify(body) })
+    return response.ok
+  }
+  try { if (process.env.RN_EMAIL) delivery.notified = await send({ from:'Aloha AI Leads <onboarding@resend.dev>', to:process.env.RN_EMAIL, subject:`New ${safe.inquiry} inquiry from ${safe.name}`, html:`<h1>New Culture Monitor inquiry</h1><p><b>Name:</b> ${safe.name}</p><p><b>Email:</b> ${safe.email}</p><p><b>Type:</b> ${safe.inquiry}</p><p><b>Message:</b><br>${safe.message}</p><p><small>Source: ${safe.source}</small></p>` }) } catch (error) { console.error('contact notification failed', error) }
+  try { delivery.confirmed = await send({ from:'RN Collins <onboarding@resend.dev>', to:email, subject:'Message received — RN Collins', html:`<h1>Hi ${safe.name} — message received.</h1><p>Thanks for reaching out about <b>${safe.inquiry}</b>. I’ll review your message and respond if the project is a fit.</p>` }) } catch (error) { console.error('contact confirmation failed', error) }
 
-  // 3 — Resend confirmation to submitter
-  try {
-    await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        from: 'RN Collins <onboarding@resend.dev>',
-        to: email,
-        subject: 'Got your message — RN Collins · Aloha AI Consulting',
-        html: `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:40px 24px;color:#1C1B1F"><div style="font-size:13px;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;color:#1B7A68;margin-bottom:16px">Aloha AI Consulting</div><h1 style="font-size:24px;font-weight:600;margin:0 0 16px">Hi ${name} — message received.</h1><p style="font-size:15px;line-height:1.7;color:#5A5857;margin:0 0 24px">Thanks for reaching out about <strong>${inquiry}</strong>. I'll review your message and be in touch within 48 hours.</p><div style="background:#F6F3EC;border-radius:8px;padding:20px 24px;margin-bottom:24px"><div style="font-size:12px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:#8A8784;margin-bottom:8px">Your message</div><p style="font-size:14px;line-height:1.65;color:#1C1B1F;margin:0">${message}</p></div><p style="font-size:13px;color:#8A8784;margin:0">— RN Collins<br>Neuroscientist · JD Candidate, Northeastern · Founder, Aloha AI Consulting</p></div>`
-      })
-    })
-  } catch (e) { console.error('Resend confirmation failed:', e) }
-
-  // 4 — Resend notification to RN
-  try {
-    await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        from: 'Aloha AI Leads <onboarding@resend.dev>',
-        to: process.env.RN_EMAIL,
-        subject: `New ${inquiry} inquiry from ${name}`,
-        html: `<div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;color:#1C1B1F"><div style="font-size:13px;font-weight:600;color:#1B7A68;margin-bottom:12px">New inquiry via ${source}</div><table style="width:100%;border-collapse:collapse;font-size:14px"><tr><td style="padding:8px 0;color:#5A5857;width:100px">Name</td><td style="padding:8px 0;font-weight:500">${name}</td></tr><tr><td style="padding:8px 0;color:#5A5857">Email</td><td style="padding:8px 0"><a href="mailto:${email}">${email}</a></td></tr><tr><td style="padding:8px 0;color:#5A5857">Type</td><td style="padding:8px 0">${inquiry}</td></tr><tr><td style="padding:8px 0;color:#5A5857;vertical-align:top">Message</td><td style="padding:8px 0;line-height:1.6">${message}</td></tr></table></div>`
-      })
-    })
-  } catch (e) { console.error('Resend notification failed:', e) }
-
-  return res.status(200).json({ ok: true })
+  if (!delivery.stored && !delivery.slack && !delivery.notified) return res.status(502).json({ error: 'Your message could not be delivered. Please contact RN through LinkedIn.' })
+  return res.status(200).json({ ok: true, reference: String(timestamp) })
 }
