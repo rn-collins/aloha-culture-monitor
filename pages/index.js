@@ -106,7 +106,7 @@ export default function Home({initialData=null,initialError=null}){
           <a href="https://linkedin.com/in/rn-collins" target="_blank" rel="noreferrer" aria-label="RN Collins on LinkedIn (opens in new tab)" style={{fontSize:13,color:'#A0A6B8'}}>LinkedIn</a>
           <button onClick={()=>setContactOpen(true)} style={{fontFamily:'Lexend, system-ui, sans-serif',fontSize:12,fontWeight:600,padding:'8px 18px',background:'#1E2130',border:`1px solid ${G}`,borderRadius:6,color:'white',cursor:'pointer',letterSpacing:'0.02em'}}>Contact the Architect</button>
         </div>
-      </footer>
+      <p><a href="https://github.com/rn-collins/aloha-culture-monitor" target="_blank" rel="noopener noreferrer">View source on GitHub ↗</a></p></footer>
     </div>
   </>)
 }
